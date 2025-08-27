@@ -23,6 +23,8 @@ root/
 用法：
     pip install -U pandas
 
+py build_dataset_from_json_dirs.py --root data_root --out data\all.csv --text-keys general_subject subject title body content --ext .json --min-chars 3 --shuffle
+
     python build_dataset_from_json_dirs.py \
         --root data_root \
         --out data/all.csv \
