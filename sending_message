@@ -1,1 +1,19 @@
-python evaluate_govdoc_classifier.py --model D:\govdata\model_govdoc.joblib --csv D:\govdata\test.csv --threshold 0.4
+最佳實踐技巧
+
+設定任務背景：避免模型自行猜測。
+
+設定語氣：要求模型「事實性 + 自信」，但若無法確定要坦承。
+
+背景知識放系統提示：如表格結構固定不變，可直接給 Claude，不必每次重複。
+
+結構化標記：XML/Markdown 標籤能幫助模型辨識不同區塊。
+
+分析順序：先看表格 → 再看圖示 → 綜合判斷。
+
+防止幻覺：提醒模型不要捏造資訊，要引用具體依據。
+
+輸出格式：使用 XML 或 JSON 包裝結果，方便系統整合。
+
+預填回應：讓 Claude 直接用指定格式開始輸出，避免跑題。
+
+擴展思考 (Extended Thinking)：開啟 scratchpad，檢視模型推理過程，幫助優化提示
