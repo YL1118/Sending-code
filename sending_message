@@ -1,7 +1,1 @@
-py build_dataset_split_from_json_dirs.py ^
-  --root data_root ^
-  --train-out data\train.csv ^
-  --test-out data\test.csv ^
-  --text-keys general_subject subject title body content ^
-  --min-chars 3 ^
-  --shuffle
+python evaluate_govdoc_classifier.py --model D:\govdata\model_govdoc.joblib --csv D:\govdata\test.csv --threshold 0.4
