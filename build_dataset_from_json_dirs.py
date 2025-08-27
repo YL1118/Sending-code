@@ -1,50 +1,42 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-把「依資料夾命名代表類別」的 JSON 檔，轉成可訓練的 CSV（text,label）。
-------------------------------------------------------------------
-假設你的資料結構：
+依資料夾 → 類別 的 JSON 資料，依子資料夾（sellected/others）自動切成 train/test。
+---------------------------------------------------------------------------------
+資料結構（你的情境）：
 root/
-  保單查詢/            # ← 資料夾名 = 類別
-    a.json
-    b.json
-  保單查詢+註記/
-    c.json
-  通知函/
-    d.json
-  扣押命令/
-    e.json
-...
+  保單查詢/
+    sellected/    # 或 selected/（拼字都支援）
+      *.json
+    others/
+      *.json
+  撤銷令/
+    sellected/
+      *.json
+    others/
+      *.json
+  ... 其他類別
 
-每個 JSON 至少包含一個文字欄位，例如：general_subject（你說已經有）。
-若你的 JSON 裡面欄位不同，也可以用 --text-keys 指定多個候選欄位，
-會依序嘗試，第一個命中的就用。
+- 類別 = 每個第一層資料夾名稱（例如「保單查詢」）。
+- 文字欄位：預設從 JSON 的 general_subject 擷取；也可用 --text-keys 或 --concat-keys。
+- 會輸出兩個 CSV：train.csv（取自 sellected/selected）、test.csv（取自 others/）。
 
 用法：
     pip install -U pandas
 
-py build_dataset_from_json_dirs.py --root data_root --out data\all.csv --text-keys general_subject subject title body content --ext .json --min-chars 3 --shuffle
+    python build_dataset_split_from_json_dirs.py \
+      --root data_root \
+      --train-out data/train.csv \
+      --test-out data/test.csv \
+      --text-keys general_subject subject title body content \
+      --min-chars 3
 
-    python build_dataset_from_json_dirs.py \
-        --root data_root \
-        --out data/all.csv \
-        --text-keys general_subject subject title body content \
-        --ext .json \
-        --min-chars 3 \
-        --limit-per-class 0
-
-參數說明：
-- --root：根目錄。
-- --out：輸出 CSV 檔路徑（兩欄：text,label）。
-- --text-keys：依序嘗試的文字欄位（命中一個就用）。
-- --ext：讀取的副檔名，預設 .json。
-- --min-chars：文字長度過短則捨棄（去除空白後計算）。
-- --limit-per-class：每類最多保留幾筆（0=不限制）；可用來平衡資料。
-- --shuffle：是否亂序（預設開啟）。
-
-注意：
-- 若 JSON 是 list 或 nested 結構，會嘗試挖出指定 key；若抓不到就跳過。
-- 若你需要把多個欄位合併（例如主旨+首段），可用 --concat-keys 來指定。
+可調參數：
+- --train-subdir-names：視為訓練集的子資料夾名稱（預設 sellected, selected）。
+- --test-subdir-names：視為測試/驗證集的子資料夾名稱（預設 others）。
+- --ext：要讀的副檔名（預設 .json）。
+- --limit-per-class-train / --limit-per-class-test：每類最多保留幾筆，0 不限。
+- --shuffle：輸出前是否打亂列順序。
 """
 
 from __future__ import annotations
@@ -58,8 +50,6 @@ import pandas as pd
 
 
 def try_extract_text(obj: Any, keys: List[str]) -> Optional[str]:
-    """嘗試從 JSON 物件中依序抽取 keys 中的第一個命中的字串。
-    支援巢狀：若 obj 是 dict，會直接找 key；若是 list，會對每個元素遞迴取第一個命中並拼接。"""
     def _from(o: Any) -> Optional[str]:
         if isinstance(o, str):
             return o
@@ -69,7 +59,6 @@ def try_extract_text(obj: Any, keys: List[str]) -> Optional[str]:
                     val = _from(o[k])
                     if isinstance(val, str) and val.strip():
                         return val
-            # 若 key 不在最上層，遞迴所有 value
             for v in o.values():
                 val = _from(v)
                 if isinstance(val, str) and val.strip():
@@ -97,66 +86,117 @@ def extract_concat(obj: Any, concat_keys: List[str]) -> Optional[str]:
     return None
 
 
-def build_dataset(root: str, exts: List[str], text_keys: List[str], concat_keys: List[str], min_chars: int, limit_per_class: int) -> pd.DataFrame:
-    rows: List[Tuple[str, str]] = []
-    for class_dir in sorted([d for d in glob(os.path.join(root, "*")) if os.path.isdir(d)]):
-        label = os.path.basename(class_dir)
-        files: List[str] = []
+def collect_jsons(root: str, class_dir: str, subdir_names: List[str], exts: List[str]) -> List[str]:
+    found = []
+    for name in subdir_names:
+        p = os.path.join(root, class_dir, name)
+        if not os.path.isdir(p):
+            continue
         for ext in exts:
-            files.extend(glob(os.path.join(class_dir, f"**/*{ext}"), recursive=True))
-        kept = 0
-        for fp in files:
+            found.extend(glob(os.path.join(p, f"**/*{ext}"), recursive=True))
+    return sorted(found)
+
+
+def build_split(root: str,
+                train_subdir_names: List[str],
+                test_subdir_names: List[str],
+                exts: List[str],
+                text_keys: List[str],
+                concat_keys: List[str],
+                min_chars: int,
+                limit_per_class_train: int,
+                limit_per_class_test: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    class_dirs = sorted([d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))])
+    train_rows: List[Tuple[str, str]] = []
+    test_rows: List[Tuple[str, str]] = []
+
+    for label in class_dirs:
+        # 收集 train/test 檔案
+        train_files = collect_jsons(root, label, train_subdir_names, exts)
+        test_files = collect_jsons(root, label, test_subdir_names, exts)
+
+        kept_tr = 0
+        for fp in train_files:
             try:
                 with open(fp, "r", encoding="utf-8", errors="ignore") as f:
                     obj = json.load(f)
             except Exception:
-                # 不是合法 JSON 就略過
                 continue
-            text = None
-            if concat_keys:
-                text = extract_concat(obj, concat_keys)
+            text = extract_concat(obj, concat_keys) if concat_keys else None
             if not text:
                 text = try_extract_text(obj, text_keys)
             if not text:
                 continue
-            t = " ".join(text.split())  # normalize 空白
+            t = " ".join(text.split())
             if len(t.replace(" ", "")) < min_chars:
                 continue
-            rows.append((t, label))
-            kept += 1
-            if limit_per_class and kept >= limit_per_class:
+            train_rows.append((t, label))
+            kept_tr += 1
+            if limit_per_class_train and kept_tr >= limit_per_class_train:
                 break
-    df = pd.DataFrame(rows, columns=["text", "label"])
-    return df
+
+        kept_te = 0
+        for fp in test_files:
+            try:
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    obj = json.load(f)
+            except Exception:
+                continue
+            text = extract_concat(obj, concat_keys) if concat_keys else None
+            if not text:
+                text = try_extract_text(obj, text_keys)
+            if not text:
+                continue
+            t = " ".join(text.split())
+            if len(t.replace(" ", "")) < min_chars:
+                continue
+            test_rows.append((t, label))
+            kept_te += 1
+            if limit_per_class_test and kept_te >= limit_per_class_test:
+                break
+
+    train_df = pd.DataFrame(train_rows, columns=["text", "label"])
+    test_df = pd.DataFrame(test_rows, columns=["text", "label"])
+    return train_df, test_df
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Build (text,label) CSV from folder-labeled JSONs")
-    ap.add_argument("--root", required=True, help="資料根目錄（子資料夾名=類別）")
-    ap.add_argument("--out", required=True, help="輸出 CSV 路徑")
-    ap.add_argument("--ext", nargs="*", default=[".json"], help="要讀的副檔名，預設 .json")
+    ap = argparse.ArgumentParser(description="Build train/test CSVs from folder-labeled JSONs (sellected/others split)")
+    ap.add_argument("--root", required=True, help="根目錄（第一層資料夾名 = 類別名）")
+    ap.add_argument("--train-out", required=True, help="輸出訓練集 CSV")
+    ap.add_argument("--test-out", required=True, help="輸出測試/驗證集 CSV")
+    ap.add_argument("--train-subdir-names", nargs="*", default=["sellected", "selected"], help="視為 train 的子資料夾名稱")
+    ap.add_argument("--test-subdir-names", nargs="*", default=["others"], help="視為 test/valid 的子資料夾名稱")
+    ap.add_argument("--ext", nargs="*", default=[".json"], help="要讀取的副檔名")
     ap.add_argument("--text-keys", nargs="*", default=["general_subject", "subject", "title", "body", "content"], help="文字欄位優先序")
     ap.add_argument("--concat-keys", nargs="*", default=[], help="可選：把多個欄位合併（主旨+內文）")
     ap.add_argument("--min-chars", type=int, default=3, help="最短字元數（去空白後）")
-    ap.add_argument("--limit-per-class", type=int, default=0, help="每類最多保留幾筆（0=不限制）")
-    ap.add_argument("--shuffle", action="store_true")
+    ap.add_argument("--limit-per-class-train", type=int, default=0, help="每類訓練最多保留幾筆（0=不限）")
+    ap.add_argument("--limit-per-class-test", type=int, default=0, help="每類測試最多保留幾筆（0=不限）")
+    ap.add_argument("--shuffle", action="store_true", help="輸出前打亂順序")
     args = ap.parse_args()
 
-    df = build_dataset(
+    train_df, test_df = build_split(
         root=args.root,
+        train_subdir_names=args.train_subdir_names,
+        test_subdir_names=args.test_subdir_names,
         exts=args.ext,
         text_keys=args.text_keys,
         concat_keys=args.concat_keys,
         min_chars=args.min_chars,
-        limit_per_class=args.limit_per_class,
+        limit_per_class_train=args.limit_per_class_train,
+        limit_per_class_test=args.limit_per_class_test,
     )
 
     if args.shuffle:
-        df = df.sample(frac=1.0, random_state=42).reset_index(drop=True)
+        train_df = train_df.sample(frac=1.0, random_state=42).reset_index(drop=True)
+        test_df = test_df.sample(frac=1.0, random_state=42).reset_index(drop=True)
 
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    df.to_csv(args.out, index=False, encoding="utf-8-sig")
-    print(f"完成：{args.out}（{len(df)} 筆）")
+    os.makedirs(os.path.dirname(args.train_out) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(args.test_out) or ".", exist_ok=True)
+    train_df.to_csv(args.train_out, index=False, encoding="utf-8-sig")
+    test_df.to_csv(args.test_out, index=False, encoding="utf-8-sig")
+    print(f"完成：{args.train_out}（{len(train_df)} 筆），{args.test_out}（{len(test_df)} 筆）")
 
 
 if __name__ == "__main__":
