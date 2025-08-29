@@ -1,19 +1,26 @@
-最佳實踐技巧
+# 互斥的「頭標籤」：一旦命中，就不要再自由與其他原子（如「註記」）拼接
+EXCLUSIVE_HEADS = {"扣押命令", "撤銷令", "收取令", "通知函"}
 
-設定任務背景：避免模型自行猜測。
+def atoms_to_composite_constrained(pred_atoms: List[str], atom_scores: Dict[str, float]) -> str:
+    """
+    先檢查互斥頭標籤；若命中，直接回該頭標籤（如同單一類別）。
+    若同時命中多個頭標籤，取分數最高者。
+    否則走既有規則；最後才自由拼接或回「不確定」。
+    """
+    s = set(pred_atoms)
 
-設定語氣：要求模型「事實性 + 自信」，但若無法確定要坦承。
+    # 1) 互斥頭標籤優先
+    heads = s & EXCLUSIVE_HEADS
+    if heads:
+        if len(heads) > 1:
+            best = max(heads, key=lambda a: atom_scores.get(a, 0.0))
+            return best
+        return next(iter(heads))
 
-背景知識放系統提示：如表格結構固定不變，可直接給 Claude，不必每次重複。
+    # 2) 既有規則（如 保單×查詢、通知×函 等）
+    for cond, name in RULES_RECOMPOSE:
+        if set(cond).issubset(s):
+            return name
 
-結構化標記：XML/Markdown 標籤能幫助模型辨識不同區塊。
-
-分析順序：先看表格 → 再看圖示 → 綜合判斷。
-
-防止幻覺：提醒模型不要捏造資訊，要引用具體依據。
-
-輸出格式：使用 XML 或 JSON 包裝結果，方便系統整合。
-
-預填回應：讓 Claude 直接用指定格式開始輸出，避免跑題。
-
-擴展思考 (Extended Thinking)：開啟 scratchpad，檢視模型推理過程，幫助優化提示
+    # 3) fallback：自由拼接或不確定
+    return "+".join(sorted(s)) if s else "不確定"
