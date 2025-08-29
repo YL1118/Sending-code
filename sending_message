@@ -1,26 +1,7 @@
-# 互斥的「頭標籤」：一旦命中，就不要再自由與其他原子（如「註記」）拼接
-EXCLUSIVE_HEADS = {"扣押命令", "撤銷令", "收取令", "通知函"}
-
-def atoms_to_composite_constrained(pred_atoms: List[str], atom_scores: Dict[str, float]) -> str:
-    """
-    先檢查互斥頭標籤；若命中，直接回該頭標籤（如同單一類別）。
-    若同時命中多個頭標籤，取分數最高者。
-    否則走既有規則；最後才自由拼接或回「不確定」。
-    """
-    s = set(pred_atoms)
-
-    # 1) 互斥頭標籤優先
-    heads = s & EXCLUSIVE_HEADS
-    if heads:
-        if len(heads) > 1:
-            best = max(heads, key=lambda a: atom_scores.get(a, 0.0))
-            return best
-        return next(iter(heads))
-
-    # 2) 既有規則（如 保單×查詢、通知×函 等）
-    for cond, name in RULES_RECOMPOSE:
-        if set(cond).issubset(s):
-            return name
-
-    # 3) fallback：自由拼接或不確定
-    return "+".join(sorted(s)) if s else "不確定"
+pred_composites = [
+    atoms_to_composite_constrained(
+        a,
+        {mlb.classes_[j]: float(proba[i, j]) for j in range(len(mlb.classes_))}
+    )
+    for i, a in enumerate(pred_atoms)
+]
