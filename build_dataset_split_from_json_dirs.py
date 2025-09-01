@@ -110,7 +110,7 @@ def collect_jsons(root: str, class_dir: str, subdir_names: List[str], exts: List
 # ---------------------- 文本/標籤構建 ----------------------
 
 def build_rows(file_paths: List[str], label: str, text_keys: List[str], concat_keys: List[str],
-               caption_keys: List[str], keep_caption_col: bool, min_chars: int, limit: int) -> List[Dict[str, str]]:
+               caption_keys: List[str], caption_col_name: str, keep_caption_col: bool, min_chars: int, limit: int) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
     kept = 0
     for fp in file_paths:
@@ -148,7 +148,9 @@ def build_rows(file_paths: List[str], label: str, text_keys: List[str], concat_k
 
         row: Dict[str, str] = {"text": tnorm, "label": label}
         if keep_caption_col:
-            row[caption_key] = caption_val
+            # 以前可能錯把 list (caption_keys) 當成 dict key，導致 'unhashable type: list'
+            # 這裡固定使用 --caption-col-name 指定的欄位名稱
+            row[caption_col_name] = caption_val
         rows.append(row)
         kept += 1
         if limit and kept >= limit:
@@ -176,9 +178,9 @@ def build_split(root: str,
         test_files = collect_jsons(root, label, test_subdir_names, exts)
 
         train_rows = build_rows(train_files, label, text_keys, concat_keys, caption_keys,
-                                keep_caption_col, min_chars, limit_per_class_train)
+                                args.caption_col_name, keep_caption_col, min_chars, limit_per_class_train)
         test_rows = build_rows(test_files, label, text_keys, concat_keys, caption_keys,
-                               keep_caption_col, min_chars, limit_per_class_test)
+                               args.caption_col_name, keep_caption_col, min_chars, limit_per_class_test)
 
         train_rows_all.extend(train_rows)
         test_rows_all.extend(test_rows)
@@ -201,6 +203,7 @@ def main():
     ap.add_argument("--text-keys", nargs="*", default=["general_subject", "subject", "title", "body", "content", "caption"], help="文字欄位優先序（預設含 caption）")
     ap.add_argument("--concat-keys", nargs="*", default=[], help="可選：把多個欄位合併（例：general_subject body）")
     ap.add_argument("--keep-caption-col", action="store_true", help="若指定，caption 會以獨立欄位輸出，不併入 text")
+    ap.add_argument("--caption-col-name", default="caption", help="輸出 CSV 中 caption 欄位名（預設 caption）")
     ap.add_argument("--caption-keyss", nargs="*", default=["caption", "Caption"], help="caption 對應的 JSON 欄位名清單（會依序嘗試；預設 caption/Caption）")
     ap.add_argument("--min-chars", type=int, default=3, help="最短字元數（去空白後）")
     ap.add_argument("--limit-per-class-train", type=int, default=0, help="每類訓練最多保留幾筆（0=不限）")
