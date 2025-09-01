@@ -1,27 +1,13 @@
-# pick_txts.py
-import random, shutil
+# -*- coding: utf-8 -*-
+# pick_txts.py  -> generalized for parsed/<category>/*.json
+import argparse
+import random
+import shutil
 from pathlib import Path
+from datetime import datetime
 
-# === 修改這裡 ===
-SRC = Path(r"C:\path\to\your\folder")  # 放 .txt 的資料夾
-N = 5                                   # 要隨機挑選的數量
-MOVE = True                             # True=搬移；False=複製
-# =================
-
-SELECTED = SRC / "selected"
-OTHERS = SRC / "others"
-SELECTED.mkdir(exist_ok=True)
-OTHERS.mkdir(exist_ok=True)
-
-# 只抓 SRC 目錄下的 .txt（不含子資料夾）
-files = [p for p in SRC.glob("*.txt") if p.is_file()]
-if not files:
-    raise SystemExit("找不到任何 .txt 檔")
-
-k = min(N, len(files))
-picked = set(random.sample(files, k=k))
-
-def place(src_path: Path, dest_dir: Path):
+def safe_place(src_path: Path, dest_dir: Path, move: bool):
+    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / src_path.name
     if dest.exists():  # 避免覆蓋：加上 _1, _2, ...
         i = 1
@@ -29,14 +15,83 @@ def place(src_path: Path, dest_dir: Path):
         while (dest_dir / f"{stem}_{i}{suf}").exists():
             i += 1
         dest = dest_dir / f"{stem}_{i}{suf}"
-    if MOVE:
+    if move:
         shutil.move(str(src_path), str(dest))
     else:
         shutil.copy2(str(src_path), str(dest))
+    return dest
 
-for p in files:
-    place(p, SELECTED if p in picked else OTHERS)
+def collect_categories(src_root: Path, ext: str):
+    """只掃描一層：src_root/<category>/*.ext"""
+    cats = {}
+    for d in sorted(p for p in src_root.iterdir() if p.is_dir()):
+        files = sorted(p for p in d.glob(f"*{ext}") if p.is_file())
+        if files:
+            cats[d.name] = files
+    return cats
 
-print(f"已放入 selected: {k} 個；others: {len(files)-k} 個")
-print(f"selected => {SELECTED}")
-print(f"others   => {OTHERS}")
+def main():
+    ap = argparse.ArgumentParser(description="從 parsed/<類別>/*.json 每類別隨機抽取 N 個，分到 selected/ 與 others/（鏡射類別）")
+    ap.add_argument("--src-root", type=str, default="parsed",
+                    help="輸入根目錄（結構：parsed/<類別>/*.json）")
+    ap.add_argument("--out-root", type=str, default=None,
+                    help="輸出根目錄（預設：<src-root>/_picked_YYYYmmdd_HHMMSS）")
+    ap.add_argument("--n", type=int, default=5, help="每類別抽取數量")
+    ap.add_argument("--move", action="store_true",
+                    help="搬移檔案（預設為複製）")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="隨機種子（指定可重現抽樣）")
+    ap.add_argument("--ext", type=str, default=".json",
+                    help="要處理的副檔名（預設 .json）")
+    args = ap.parse_args()
+
+    src_root = Path(args.src_root)
+    if not src_root.exists():
+        raise SystemExit(f"找不到輸入根目錄：{src_root.resolve()}")
+
+    out_root = Path(args.out_root) if args.out_root else (src_root / f"_picked_{datetime.now():%Y%m%d_%H%M%S}")
+    selected_root = out_root / "selected"
+    others_root = out_root / "others"
+    selected_root.mkdir(parents=True, exist_ok=True)
+    others_root.mkdir(parents=True, exist_ok=True)
+
+    if args.seed is not None:
+        random.seed(args.seed)
+
+    cats = collect_categories(src_root, args.ext)
+    if not cats:
+        raise SystemExit(f"在 {src_root.resolve()} 下面找不到任何含有 {args.ext} 的類別資料夾")
+
+    grand_sel = 0
+    grand_oth = 0
+    print(f"🚀 掃描來源：{src_root.resolve()}  ->  輸出：{out_root.resolve()}")
+    print(f"參數：每類別抽取 N={args.n}；模式={'搬移' if args.move else '複製'}；副檔名={args.ext}")
+
+    for cat, files in cats.items():
+        k = min(args.n, len(files))
+        picked = set(random.sample(files, k=k))
+        sel_dir = selected_root / cat
+        oth_dir = others_root / cat
+
+        count_sel = 0
+        count_oth = 0
+
+        for p in files:
+            dest_dir = sel_dir if p in picked else oth_dir
+            safe_place(p, dest_dir, move=args.move)
+            if p in picked:
+                count_sel += 1
+            else:
+                count_oth += 1
+
+        grand_sel += count_sel
+        grand_oth += count_oth
+        print(f"   📁 類別「{cat}」：selected {count_sel}、others {count_oth}")
+
+    print("——")
+    print(f"✅ 全部完成：selected {grand_sel} 檔、others {grand_oth} 檔")
+    print(f"selected => {selected_root}")
+    print(f"others   => {others_root}")
+
+if __name__ == "__main__":
+    main()
