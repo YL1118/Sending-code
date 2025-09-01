@@ -1,5 +1,15 @@
 # -*- coding: utf-8 -*-
 # pick_txts.py  -> generalized for parsed/<category>/*.json
+"""
+基本用法（複製，不動到原檔）
+python pick_txts.py --src-root parsed --n 5
+
+指定輸出資料夾、設定種子（可重現抽樣）
+python pick_txts.py --src-root parsed --out-root parsed_sample --n 8 --seed 42
+
+直接搬移檔案（請小心）
+python pick_txts.py --src-root parsed --n 3 --move
+"""
 import argparse
 import random
 import shutil
