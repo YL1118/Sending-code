@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-# pick_txts.py  -> generalized for parsed/<category>/*.json
-"""
-基本用法（複製，不動到原檔）
-python pick_txts.py --src-root parsed --n 5
-
-指定輸出資料夾、設定種子（可重現抽樣）
-python pick_txts.py --src-root parsed --out-root parsed_sample --n 8 --seed 42
-
-直接搬移檔案（請小心）
-python pick_txts.py --src-root parsed --n 3 --move
-"""
+# pick_jsons.py  ->  parsed/<類別>/*.json  ->  <out-root>/<類別>/{selected,others}/*.json
 import argparse
 import random
 import shutil
@@ -41,7 +31,9 @@ def collect_categories(src_root: Path, ext: str):
     return cats
 
 def main():
-    ap = argparse.ArgumentParser(description="從 parsed/<類別>/*.json 每類別隨機抽取 N 個，分到 selected/ 與 others/（鏡射類別）")
+    ap = argparse.ArgumentParser(
+        description="從 parsed/<類別>/*.json 每類別隨機抽取 N 個，輸出為 <out-root>/<類別>/{selected,others}"
+    )
     ap.add_argument("--src-root", type=str, default="parsed",
                     help="輸入根目錄（結構：parsed/<類別>/*.json）")
     ap.add_argument("--out-root", type=str, default=None,
@@ -60,10 +52,7 @@ def main():
         raise SystemExit(f"找不到輸入根目錄：{src_root.resolve()}")
 
     out_root = Path(args.out_root) if args.out_root else (src_root / f"_picked_{datetime.now():%Y%m%d_%H%M%S}")
-    selected_root = out_root / "selected"
-    others_root = out_root / "others"
-    selected_root.mkdir(parents=True, exist_ok=True)
-    others_root.mkdir(parents=True, exist_ok=True)
+    out_root.mkdir(parents=True, exist_ok=True)
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -72,20 +61,20 @@ def main():
     if not cats:
         raise SystemExit(f"在 {src_root.resolve()} 下面找不到任何含有 {args.ext} 的類別資料夾")
 
-    grand_sel = 0
-    grand_oth = 0
-    print(f"🚀 掃描來源：{src_root.resolve()}  ->  輸出：{out_root.resolve()}")
-    print(f"參數：每類別抽取 N={args.n}；模式={'搬移' if args.move else '複製'}；副檔名={args.ext}")
+    total_sel = total_oth = 0
+    print(f"🚀 掃描來源：{src_root.resolve()}")
+    print(f"📦 輸出位置：{out_root.resolve()}")
+    print(f"參數：每類別 N={args.n}；模式={'搬移' if args.move else '複製'}；副檔名={args.ext}")
 
     for cat, files in cats.items():
         k = min(args.n, len(files))
         picked = set(random.sample(files, k=k))
-        sel_dir = selected_root / cat
-        oth_dir = others_root / cat
 
-        count_sel = 0
-        count_oth = 0
+        cat_root = out_root / cat
+        sel_dir = cat_root / "selected"
+        oth_dir = cat_root / "others"
 
+        count_sel = count_oth = 0
         for p in files:
             dest_dir = sel_dir if p in picked else oth_dir
             safe_place(p, dest_dir, move=args.move)
@@ -94,14 +83,18 @@ def main():
             else:
                 count_oth += 1
 
-        grand_sel += count_sel
-        grand_oth += count_oth
-        print(f"   📁 類別「{cat}」：selected {count_sel}、others {count_oth}")
+        total_sel += count_sel
+        total_oth += count_oth
+        print(f"   📁 類別「{cat}」：selected {count_sel}、others {count_oth}  ->  {cat_root}")
 
     print("——")
-    print(f"✅ 全部完成：selected {grand_sel} 檔、others {grand_oth} 檔")
-    print(f"selected => {selected_root}")
-    print(f"others   => {others_root}")
+    print(f"✅ 全部完成：selected {total_sel} 檔、others {total_oth} 檔")
+    print(f"🗂️ 結構示意：")
+    print(f"{out_root}/")
+    print(f"  <類別A>/")
+    print(f"    selected/*.json")
+    print(f"    others/*.json")
+    print(f"  <類別B>/ ...")
 
 if __name__ == "__main__":
     main()
