@@ -20,7 +20,10 @@ root/
 - 類別 = 第一層資料夾名稱（例如「保單查詢」）。
 - 文本欄位：預設從 JSON 的 general_subject 擷取；可用 --text-keys 或 --concat-keys 覆寫。
 - 會輸出兩個 CSV：train.csv（取自 sellected/selected）、test.csv（取自 others/）。
-- 可選：--keep-caption-col 讓 caption 以獨立欄位輸出；否則會併入 text。
+- 支援 caption：
+  - 預設會把 caption 併入 text。
+  - 加上 --keep-caption-col 時，caption 會獨立成欄位（欄名可用 --caption-col-name 指定）。
+  - caption 的 key 可用 --caption-keys 指定多個候選，腳本會遞迴深搜找到第一個非空字串。
 
 用法：
     pip install -U pandas
@@ -32,6 +35,8 @@ root/
       --text-keys general_subject subject title body content caption \
       --concat-keys general_subject body \
       --keep-caption-col \
+      --caption-keys caption Caption image_caption alt_text \
+      --caption-col-name caption \
       --min-chars 3 --shuffle
 
 參數摘要：
@@ -39,8 +44,9 @@ root/
 - --test-subdir-names：視為測試/驗證集的子資料夾名稱（預設 others）。
 - --ext：要讀的副檔名（預設 .json）。
 - --limit-per-class-train / --limit-per-class-test：每類最多保留幾筆，0 不限。
-- --keep-caption-col：若指定，caption 會獨立輸出，不併進 text。
-- --caption-keys：caption 的欄位名稱（預設 caption）。
+- --keep-caption-col：若指定，caption 會獨立輸出，不併入 text。
+- --caption-keys：caption 的欄位名稱候選清單（會依序嘗試）。
+- --caption-col-name：輸出 CSV 的 caption 欄位名（預設 caption）。
 - --shuffle：輸出前打亂列順序。
 """
 
@@ -61,24 +67,22 @@ def try_extract_text(obj: Any, keys: List[str]) -> Optional[str]:
         if isinstance(o, str):
             return o
         if isinstance(o, dict):
+            # 優先 keys 對應的值
             for k in keys:
                 if k in o and isinstance(o[k], (str, list, dict)):
                     val = _from(o[k])
                     if isinstance(val, str) and val.strip():
                         return val
-            # 未命中 keys，繼續深搜
+            # 未命中 keys，繼續深搜所有值
             for v in o.values():
                 val = _from(v)
                 if isinstance(val, str) and val.strip():
                     return val
         if isinstance(o, list):
-            parts: List[str] = []
             for it in o:
                 val = _from(it)
                 if isinstance(val, str) and val.strip():
-                    parts.append(val)
-            if parts:
-                return "\n".join(parts)
+                    return val
         return None
     return _from(obj)
 
@@ -90,7 +94,8 @@ def extract_concat(obj: Any, concat_keys: List[str]) -> Optional[str]:
         if t and isinstance(t, str) and t.strip():
             parts.append(t.strip())
     if parts:
-        return " \n".join(parts)
+        return " 
+".join(parts)
     return None
 
 
@@ -110,7 +115,8 @@ def collect_jsons(root: str, class_dir: str, subdir_names: List[str], exts: List
 # ---------------------- 文本/標籤構建 ----------------------
 
 def build_rows(file_paths: List[str], label: str, text_keys: List[str], concat_keys: List[str],
-               caption_keys: List[str], caption_col_name: str, keep_caption_col: bool, min_chars: int, limit: int) -> List[Dict[str, str]]:
+               caption_keys: List[str], caption_col_name: str, keep_caption_col: bool,
+               min_chars: int, limit: int) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
     kept = 0
     for fp in file_paths:
@@ -120,7 +126,7 @@ def build_rows(file_paths: List[str], label: str, text_keys: List[str], concat_k
         except Exception:
             continue
 
-        # 取 caption（單獨欄位或併入 text）
+        # 取 caption（單獨欄位或併入 text）：依 caption_keys 逐一深搜
         caption_val = ""
         for ck in caption_keys:
             tmp = try_extract_text(obj, [ck])
@@ -128,15 +134,16 @@ def build_rows(file_paths: List[str], label: str, text_keys: List[str], concat_k
                 caption_val = tmp.strip()
                 break
 
-        # 先試 concat-keys，再試 text-keys
+        # 先試 concat-keys（若 keep-caption-col，應排除 caption_keys）
         concat_eff = [k for k in concat_keys if not (keep_caption_col and k in caption_keys)]
         text = extract_concat(obj, concat_eff) if concat_eff else None
+
+        # 再試 text-keys（若 keep-caption-col，亦排除 caption_keys）
         if not text:
-            # 當 keep_caption_col=True 時，text-keys 內若包含 caption_key，需略過避免併入
             tk = [k for k in text_keys if not (keep_caption_col and k in caption_keys)]
             text = try_extract_text(obj, tk)
 
-        # 若仍無文本且 keep-caption-col 為 False，允許把 caption 併進 text
+        # 若仍沒有文字，且未開啟 keep-caption-col，允許用 caption 補齊 text
         if (not text) and (not keep_caption_col) and caption_val:
             text = caption_val
         if not text:
@@ -148,8 +155,6 @@ def build_rows(file_paths: List[str], label: str, text_keys: List[str], concat_k
 
         row: Dict[str, str] = {"text": tnorm, "label": label}
         if keep_caption_col:
-            # 以前可能錯把 list (caption_keys) 當成 dict key，導致 'unhashable type: list'
-            # 這裡固定使用 --caption-col-name 指定的欄位名稱
             row[caption_col_name] = caption_val
         rows.append(row)
         kept += 1
@@ -165,6 +170,7 @@ def build_split(root: str,
                 text_keys: List[str],
                 concat_keys: List[str],
                 caption_keys: List[str],
+                caption_col_name: str,
                 keep_caption_col: bool,
                 min_chars: int,
                 limit_per_class_train: int,
@@ -178,9 +184,9 @@ def build_split(root: str,
         test_files = collect_jsons(root, label, test_subdir_names, exts)
 
         train_rows = build_rows(train_files, label, text_keys, concat_keys, caption_keys,
-                                args.caption_col_name, keep_caption_col, min_chars, limit_per_class_train)
+                                caption_col_name, keep_caption_col, min_chars, limit_per_class_train)
         test_rows = build_rows(test_files, label, text_keys, concat_keys, caption_keys,
-                               args.caption_col_name, keep_caption_col, min_chars, limit_per_class_test)
+                               caption_col_name, keep_caption_col, min_chars, limit_per_class_test)
 
         train_rows_all.extend(train_rows)
         test_rows_all.extend(test_rows)
@@ -200,11 +206,11 @@ def main():
     ap.add_argument("--train-subdir-names", nargs="*", default=["sellected", "selected"], help="視為 train 的子資料夾名稱")
     ap.add_argument("--test-subdir-names", nargs="*", default=["others"], help="視為 test/valid 的子資料夾名稱")
     ap.add_argument("--ext", nargs="*", default=[".json"], help="要讀取的副檔名")
-    ap.add_argument("--text-keys", nargs="*", default=["general_subject", "subject", "title", "body", "content", "caption"], help="文字欄位優先序（預設含 caption）")
+    ap.add_argument("--text-keys", nargs="*", default=["general_subject", "subject", "title", "body", "content", "caption"], help="文字欄位優先序（可含 caption）")
     ap.add_argument("--concat-keys", nargs="*", default=[], help="可選：把多個欄位合併（例：general_subject body）")
     ap.add_argument("--keep-caption-col", action="store_true", help="若指定，caption 會以獨立欄位輸出，不併入 text")
+    ap.add_argument("--caption-keys", nargs="*", default=["caption", "Caption"], help="caption 對應的 JSON 欄位名清單（會依序嘗試）")
     ap.add_argument("--caption-col-name", default="caption", help="輸出 CSV 中 caption 欄位名（預設 caption）")
-    ap.add_argument("--caption-keyss", nargs="*", default=["caption", "Caption"], help="caption 對應的 JSON 欄位名清單（會依序嘗試；預設 caption/Caption）")
     ap.add_argument("--min-chars", type=int, default=3, help="最短字元數（去空白後）")
     ap.add_argument("--limit-per-class-train", type=int, default=0, help="每類訓練最多保留幾筆（0=不限）")
     ap.add_argument("--limit-per-class-test", type=int, default=0, help="每類測試最多保留幾筆（0=不限）")
@@ -219,6 +225,7 @@ def main():
         text_keys=args.text_keys,
         concat_keys=args.concat_keys,
         caption_keys=args.caption_keys,
+        caption_col_name=args.caption_col_name,
         keep_caption_col=args.keep_caption_col,
         min_chars=args.min_chars,
         limit_per_class_train=args.limit_per_class_train,
