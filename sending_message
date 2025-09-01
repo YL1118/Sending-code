@@ -1,7 +1,29 @@
-pred_composites = [
-    atoms_to_composite_constrained(
-        a,
-        {mlb.classes_[j]: float(proba[i, j]) for j in range(len(mlb.classes_))}
-    )
-    for i, a in enumerate(pred_atoms)
-]
+# -*- coding: utf-8 -*-
+# rename_drop_txt.py
+from pathlib import Path
+import os
+
+# === 修改這裡 ===
+ROOT = Path("test_json_more_forall")  # 根目錄
+DRY_RUN = False                       # True=僅列印不執行；False=真的改名
+# =================
+
+def main():
+    count = 0
+    for path in ROOT.rglob("*.txt.json"):   # 遞迴尋找所有 xxx.txt.json
+        new_name = path.with_name(path.name.replace(".txt.json", ".json"))
+        if new_name.exists():
+            print(f"⚠️ 目標已存在，略過：{new_name}")
+            continue
+
+        if DRY_RUN:
+            print(f"[試跑] {path} -> {new_name}")
+        else:
+            os.rename(path, new_name)
+            print(f"✔ {path} -> {new_name}")
+            count += 1
+
+    print(f"🎉 全部完成，共處理 {count} 個檔案")
+
+if __name__ == "__main__":
+    main()
