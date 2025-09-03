@@ -9,9 +9,11 @@ Evaluate govdoc multilabel classifier directly on a CSV (text,label[,caption])
 3) 混淆矩陣與 Top-K 誤填對
 4) **加入 caption 評估**（選擇性）：可從 CSV 讀取 caption 欄位，
    以與訓練相同的方式將 caption 併入 text（字元 n-gram + LR 相容）。
+5) **Per-class 門檻（本版新增）**：
+   以 CLASS_THRESHOLDS 設定各原子門檻；未列者使用 default。
 
 用法（Windows / PowerShell）：
-    python evaluate_govdoc_classifier_multi.py \
+    python evaluate_govdoc_classifier.py \
       --model D:\govdata\model_govdoc.joblib \
       --csv   D:\govdata\test.csv \
       --text-col text --label-col label \
@@ -69,7 +71,6 @@ RULES_RECOMPOSE: List[Tuple[Tuple[str, ...], str]] = [
 # 註：這些是複合頭標籤名稱，不是原子
 EXCLUSIVE_HEADS = {"扣押命令", "撤銷令", "收取令", "通知函"}
 
-
 def label_to_atoms(label: str) -> List[str]:
     label = str(label).strip()
     if label in LABEL_TO_ATOMS:
@@ -85,7 +86,6 @@ def label_to_atoms(label: str) -> List[str]:
                 atoms.append(a)
     return sorted(set(atoms))
 
-
 def atoms_to_composite(pred_atoms: List[str]) -> str:
     s = set(pred_atoms)
     # 互斥頭標籤（僅在 pred_atoms 本身含有複合名稱時才會命中；通常不會）
@@ -96,7 +96,6 @@ def atoms_to_composite(pred_atoms: List[str]) -> str:
         if set(cond).issubset(s):
             return name
     return "+".join(sorted(s)) if s else "不確定"
-
 
 # --- 後置覆寫規則：你要求的邏輯 ---
 def post_override_route(text_original: str, composite: str) -> str:
@@ -110,6 +109,12 @@ def post_override_route(text_original: str, composite: str) -> str:
             return "通知函"
     return composite
 
+# --- Per-class thresholds（本版新增） ---
+# 未列在此 dict 的原子，一律用 "default"
+CLASS_THRESHOLDS: Dict[str, float] = {
+    "default": 0.5,
+    "扣押命令": 0.4,  # 你要的調整
+}
 
 # --- Caption 融合：與訓練一致 ---
 def fuse_text_with_caption(text: str, caption: str | None, weight: float, tag: str = "[CAP]") -> str:
@@ -120,7 +125,6 @@ def fuse_text_with_caption(text: str, caption: str | None, weight: float, tag: s
     repeats = max(1, int(math.ceil(weight)))
     block = (f" {tag} " + cap) * repeats
     return (text + block).strip()
-
 
 # --- 推論流程 ---
 def load_model(path: str):
@@ -137,17 +141,24 @@ def load_model(path: str):
     mlb.fit([[]])
     return vec, clf, mlb, threshold, use_caption_model, caption_weight_model, cap_tag
 
-
-def predict_atoms(texts: List[str], vec, clf, mlb, threshold: float):
+def predict_atoms(texts: List[str], vec, clf, mlb, default_thr: float):
+    """
+    依 per-class 門檻做二值化：對於 mlb.classes_ 中每個原子，
+    取 CLASS_THRESHOLDS.get(atom, default_thr) 作為其門檻。
+    """
     X = vec.transform(texts)
     proba = clf.predict_proba(X)
-    preds = (proba >= threshold).astype(int)
+    preds = np.zeros_like(proba, dtype=int)
+
+    for j, atom in enumerate(mlb.classes_):
+        thr = CLASS_THRESHOLDS.get(atom, default_thr)
+        preds[:, j] = (proba[:, j] >= thr).astype(int)
+
     pred_atoms = []
     for i in range(len(texts)):
         atoms = [mlb.classes_[j] for j in range(len(mlb.classes_)) if preds[i, j] == 1]
         pred_atoms.append(atoms)
     return pred_atoms, proba
-
 
 def main():
     ap = argparse.ArgumentParser(description="Evaluate govdoc classifier on CSV (text,label[,caption]) with error analysis")
@@ -170,8 +181,8 @@ def main():
 
     vec, clf, mlb, thr_model, use_caption_model, caption_weight_model, cap_tag = load_model(args.model)
 
-    # 門檻
-    threshold = args.threshold if args.threshold is not None else thr_model
+    # 門檻（作為 default，個別類別可被 CLASS_THRESHOLDS 覆蓋）
+    default_threshold = args.threshold if args.threshold is not None else thr_model
 
     # 決定是否使用 caption 與權重（CLI 優先，否則沿用模型設定）
     use_caption = args.use_caption or use_caption_model
@@ -200,8 +211,8 @@ def main():
     y_atoms = [[a for a in atoms if a in set(mlb.classes_)] for atoms in y_atoms]
     Y_true = mlb.transform(y_atoms)
 
-    # 預測
-    pred_atoms, proba = predict_atoms(texts, vec, clf, mlb, threshold)
+    # 預測（使用 per-class 門檻）
+    pred_atoms, proba = predict_atoms(texts, vec, clf, mlb, default_threshold)
     Y_pred = mlb.transform([[a for a in atoms if a in set(mlb.classes_)] for atoms in pred_atoms])
 
     # --- 原子層報告 ---
@@ -222,7 +233,6 @@ def main():
     ]
 
     from sklearn.metrics import classification_report as clsrep
-    # 生成分類報告需要把類別映射為索引
     comps = sorted(set(gt_composites) | set(pred_composites))
     comp_to_idx = {c: i for i, c in enumerate(comps)}
     y_comp_true = np.array([comp_to_idx.get(c, -1) for c in gt_composites])
@@ -313,7 +323,6 @@ def main():
         err_df = pred_df[pred_df['label_true'] != pred_df['label_pred']]
         err_df.to_csv(args.errors_out, index=False, encoding='utf-8-sig')
         print(f"已匯出錯誤樣本：{args.errors_out}（{len(err_df)} 筆）")
-
 
 if __name__ == "__main__":
     main()
